@@ -32,7 +32,7 @@ En iyi sonuç için formun 4 köşesine dolu siyah kare marker yerleştirin.
 
 Bu marker'lar kayma, döndürme ve ölçek farklılıklarını düzeltmek için kullanılır.
 
-## CLI Kullanım
+## CLI Kullanımı
 
 ```bash
 python omr_professional.py \
