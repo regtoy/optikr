@@ -1,0 +1,44 @@
+# Örnek optik form şablonu
+# Koordinatlar normalize edilmiştir (0.0 - 1.0)
+
+name: "Deneme Optik Formu"
+version: 2
+pages:
+  - page_index: 0
+    # Marker arama penceresi: sayfanın kısa kenarının oranı
+    marker_search_window: 0.10
+
+    # Köşe markerları (siyah dolu kare kutular önerilir)
+    alignment_anchors:
+      - id: top_left
+        x: 0.05
+        y: 0.05
+      - id: top_right
+        x: 0.95
+        y: 0.05
+      - id: bottom_left
+        x: 0.05
+        y: 0.95
+      - id: bottom_right
+        x: 0.95
+        y: 0.95
+
+    fields:
+      - id: kitapcik
+        label: "Kitapçık Türü"
+        type: single_choice
+        options:
+          - { key: A, x: 0.15, y: 0.18, r: 0.015 }
+          - { key: B, x: 0.20, y: 0.18, r: 0.015 }
+          - { key: C, x: 0.25, y: 0.18, r: 0.015 }
+          - { key: D, x: 0.30, y: 0.18, r: 0.015 }
+
+      - id: q1
+        label: "Soru 1"
+        type: single_choice
+        options:
+          - { key: A, x: 0.15, y: 0.30, r: 0.014 }
+          - { key: B, x: 0.20, y: 0.30, r: 0.014 }
+          - { key: C, x: 0.25, y: 0.30, r: 0.014 }
+          - { key: D, x: 0.30, y: 0.30, r: 0.014 }
+          - { key: E, x: 0.35, y: 0.30, r: 0.014 }
