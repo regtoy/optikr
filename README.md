@@ -32,7 +32,7 @@ En iyi sonuç için formun 4 köşesine dolu siyah kare marker yerleştirin.
 
 Bu marker'lar kayma, döndürme ve ölçek farklılıklarını düzeltmek için kullanılır.
 
-## Kullanım
+## CLI Kullanım
 
 ```bash
 python omr_professional.py \
@@ -43,6 +43,27 @@ python omr_professional.py \
   --mark-z-threshold 1.0 \
   --min-fill-ratio 0.22
 ```
+
+## Streamlit Web Arayüzü
+
+Proje artık web arayüzü de içerir:
+- PDF yükleme,
+- YAML şablon yükleme,
+- **elle cevap anahtarı** girme,
+- sonuçları tablo/CSV olarak görüntüleme,
+- karar verme gereksinimlerini uygunluk durumuyla izleme (`UYGUN` / `İNCELEME GEREKİR`).
+
+Çalıştırma:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Arayüzde karar özeti şu metriklerle gösterilir:
+- zorunlu soru sayısı,
+- zorunlu sorularda doğru sayısı,
+- başarı oranı,
+- belirsiz yanıt sayısı (`blank` / `multiple`).
 
 ## Çıktılar
 
