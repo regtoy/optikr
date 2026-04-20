@@ -4,14 +4,14 @@
 from __future__ import annotations
 
 import io
-import tempfile
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 import streamlit as st
 import yaml
 
-from omr_professional import OMRProcessor, load_config
+from omr_professional import evaluate_with_answer_key, load_config, process_pdf_bytes
 
 st.set_page_config(page_title="Optik Form Değerlendirme", layout="wide")
 st.title("📄 Optik Form Değerlendirme Arayüzü")
@@ -40,20 +40,14 @@ def parse_template_fields(template_text: str) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["page_index", "field_id"]).reset_index(drop=True)
 
 
-def run_omr(pdf_bytes: bytes, template_bytes: bytes, dpi: int, z_threshold: float, min_fill_ratio: float) -> pd.DataFrame:
+@st.cache_resource(show_spinner=False)
+def load_config_cached(template_text: str):
+    import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
-        pdf_path = tmp_dir / "uploaded.pdf"
-        template_path = tmp_dir / "template.yaml"
-        out_dir = tmp_dir / "output"
-
-        pdf_path.write_bytes(pdf_bytes)
-        template_path.write_bytes(template_bytes)
-
-        config = load_config(template_path)
-        processor = OMRProcessor(config=config, mark_z_threshold=z_threshold, min_fill_ratio=min_fill_ratio)
-        csv_path, _ = processor.process_pdf(pdf_path=pdf_path, output_dir=out_dir, dpi=dpi)
-        return pd.read_csv(csv_path)
+        path = Path(tmp) / "template.yaml"
+        path.write_text(template_text, encoding="utf-8")
+        return load_config(path)
 
 
 def build_answer_key_editor(field_df: pd.DataFrame) -> pd.DataFrame:
@@ -80,33 +74,60 @@ def build_answer_key_editor(field_df: pd.DataFrame) -> pd.DataFrame:
     return edited
 
 
-def evaluate_decisions(results_df: pd.DataFrame, answer_key_df: pd.DataFrame, min_success_rate: float) -> tuple[pd.DataFrame, dict[str, float | int | str]]:
-    merged = results_df.merge(answer_key_df[["page_index", "field_id", "correct_answer", "required"]], on=["page_index", "field_id"], how="left")
+def run_batch(
+    pdf_files,
+    config,
+    dpi: int,
+    z_threshold: float,
+    min_fill_ratio: float,
+    answer_key_df: pd.DataFrame,
+    min_success_rate: float,
+) -> tuple[pd.DataFrame, pd.DataFrame, bytes]:
+    all_rows: list[pd.DataFrame] = []
+    summary_rows: list[dict[str, str | float | int]] = []
 
-    normalized_value = merged["value"].fillna("").astype(str).str.replace(" ", "", regex=False).str.upper()
-    normalized_key = merged["correct_answer"].fillna("").astype(str).str.replace(" ", "", regex=False).str.upper()
+    zip_buffer = io.BytesIO()
+    with ZipFile(zip_buffer, mode="w", compression=ZIP_DEFLATED) as zf:
+        for up in pdf_files:
+            raw = up.getvalue()
+            base_name = Path(up.name).stem
 
-    merged["is_key_provided"] = normalized_key != ""
-    merged["is_correct"] = merged["is_key_provided"] & (normalized_value == normalized_key)
-    merged["requires_review"] = merged["status"].isin(["multiple", "blank"]) | (~merged["is_correct"] & merged["is_key_provided"])
+            result_df, annotated_pdf = process_pdf_bytes(
+                pdf_bytes=raw,
+                config=config,
+                dpi=dpi,
+                mark_z_threshold=z_threshold,
+                min_fill_ratio=min_fill_ratio,
+            )
+            if result_df.empty:
+                continue
 
-    total_required = int(merged[merged["required"] == True].shape[0])
-    correct_required = int(merged[(merged["required"] == True) & (merged["is_correct"])].shape[0])
-    ambiguous_count = int(merged[merged["status"].isin(["multiple", "blank"])].shape[0])
+            evaluated_df, decision = evaluate_with_answer_key(
+                result_df,
+                answer_key_df=answer_key_df,
+                min_success_rate=min_success_rate,
+            )
+            evaluated_df.insert(0, "source_pdf", up.name)
+            all_rows.append(evaluated_df)
 
-    success_rate = (correct_required / total_required) if total_required else 0.0
-    decision_status = "KARAR: UYGUN"
-    if success_rate < min_success_rate or ambiguous_count > 0:
-        decision_status = "KARAR: İNCELEME GEREKİR"
+            summary_rows.append(
+                {
+                    "source_pdf": up.name,
+                    "decision_status": decision["decision_status"],
+                    "success_rate": decision["success_rate"],
+                    "ambiguous_count": decision["ambiguous_count"],
+                    "correct_required": decision["correct_required"],
+                    "total_required": decision["total_required"],
+                }
+            )
 
-    summary = {
-        "total_required": total_required,
-        "correct_required": correct_required,
-        "success_rate": round(success_rate, 4),
-        "ambiguous_count": ambiguous_count,
-        "decision_status": decision_status,
-    }
-    return merged, summary
+            zf.writestr(f"{base_name}_evaluated.csv", evaluated_df.to_csv(index=False).encode("utf-8-sig"))
+            if annotated_pdf:
+                zf.writestr(f"{base_name}_annotated.pdf", annotated_pdf)
+
+    combined_df = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
+    summary_df = pd.DataFrame(summary_rows)
+    return combined_df, summary_df, zip_buffer.getvalue()
 
 
 with st.sidebar:
@@ -116,7 +137,7 @@ with st.sidebar:
     min_fill_ratio = st.slider("Min Fill Ratio", min_value=0.05, max_value=0.9, value=0.22, step=0.01)
     min_success_rate = st.slider("Karar için minimum başarı oranı", min_value=0.0, max_value=1.0, value=0.8, step=0.05)
 
-pdf_file = st.file_uploader("1) PDF yükleyin", type=["pdf"])
+pdf_files = st.file_uploader("1) PDF yükleyin (bir veya birden fazla)", type=["pdf"], accept_multiple_files=True)
 template_file = st.file_uploader("2) YAML şablon yükleyin", type=["yaml", "yml"])
 
 if template_file is not None:
@@ -126,40 +147,42 @@ if template_file is not None:
     st.dataframe(fields_df, use_container_width=True)
 
     answer_key_df = build_answer_key_editor(fields_df)
+    config = load_config_cached(template_text)
 
-    if pdf_file is not None and st.button("3) Değerlendir", type="primary"):
-        with st.spinner("PDF işleniyor..."):
-            results_df = run_omr(
-                pdf_bytes=pdf_file.getvalue(),
-                template_bytes=template_text.encode("utf-8"),
+    if pdf_files and st.button("3) Değerlendir", type="primary"):
+        with st.spinner("PDF(ler) işleniyor..."):
+            combined_df, summary_df, zip_bytes = run_batch(
+                pdf_files=pdf_files,
+                config=config,
                 dpi=int(dpi),
                 z_threshold=float(z_threshold),
                 min_fill_ratio=float(min_fill_ratio),
+                answer_key_df=answer_key_df,
+                min_success_rate=float(min_success_rate),
             )
 
-        evaluated_df, summary = evaluate_decisions(results_df, answer_key_df, min_success_rate=min_success_rate)
-
-        st.subheader("📊 Karar / Gereksinim Uygunluk Durumu")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Zorunlu Soru", summary["total_required"])
-        c2.metric("Doğru (Zorunlu)", summary["correct_required"])
-        c3.metric("Başarı Oranı", f"%{summary['success_rate'] * 100:.1f}")
-        c4.metric("Belirsiz (blank/multiple)", summary["ambiguous_count"])
-
-        if summary["decision_status"].endswith("UYGUN"):
-            st.success(summary["decision_status"])
+        if summary_df.empty:
+            st.error("İşlenecek geçerli bir sonuç üretilemedi.")
         else:
-            st.warning(summary["decision_status"])
+            st.subheader("📊 Karar / Gereksinim Uygunluk Özeti")
+            st.dataframe(summary_df, use_container_width=True)
 
-        st.subheader("🧾 Detay Sonuçlar")
-        st.dataframe(evaluated_df, use_container_width=True)
+            needs_review = int((summary_df["decision_status"] == "KARAR: İNCELEME GEREKİR").sum())
+            approved = int((summary_df["decision_status"] == "KARAR: UYGUN").sum())
 
-        csv_bytes = evaluated_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            label="Sonuçları CSV indir",
-            data=io.BytesIO(csv_bytes),
-            file_name="streamlit_omr_results.csv",
-            mime="text/csv",
-        )
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Toplam PDF", int(summary_df.shape[0]))
+            c2.metric("Uygun", approved)
+            c3.metric("İnceleme Gerekir", needs_review)
+
+            st.subheader("🧾 Detay Sonuçlar")
+            st.dataframe(combined_df, use_container_width=True)
+
+            st.download_button(
+                label="Tüm çıktılarını ZIP indir",
+                data=zip_bytes,
+                file_name="streamlit_omr_outputs.zip",
+                mime="application/zip",
+            )
 else:
     st.info("Devam etmek için önce YAML şablonunu yükleyin.")
