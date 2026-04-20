@@ -435,6 +435,101 @@ def discover_pdfs(input_path: Path) -> list[Path]:
     return []
 
 
+def process_pdf_bytes(
+    pdf_bytes: bytes,
+    config: OMRConfig,
+    dpi: int = 300,
+    mark_z_threshold: float = 1.0,
+    min_fill_ratio: float = 0.22,
+) -> tuple[pd.DataFrame, bytes]:
+    """
+    Streamlit/web gibi ortamlarda diskten bağımsız kullanım için PDF bytes işleme yardımcı fonksiyonu.
+
+    Dönen değerler:
+    - results_df: alan bazlı sonuçlar
+    - annotated_pdf_bytes: anotasyonlu PDF bayt içeriği (üretilemezse boş bytes)
+    """
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        if doc.page_count == 0:
+            return pd.DataFrame(), b""
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        input_pdf = tmp_dir / "input.pdf"
+        output_dir = tmp_dir / "output"
+        input_pdf.write_bytes(pdf_bytes)
+
+        processor = OMRProcessor(
+            config=config,
+            mark_z_threshold=mark_z_threshold,
+            min_fill_ratio=min_fill_ratio,
+        )
+        csv_path, out_pdf = processor.process_pdf(input_pdf, output_dir, dpi=dpi)
+
+        results_df = pd.read_csv(csv_path) if csv_path.exists() else pd.DataFrame()
+        annotated_pdf_bytes = out_pdf.read_bytes() if out_pdf.exists() else b""
+        return results_df, annotated_pdf_bytes
+
+
+def evaluate_with_answer_key(
+    results_df: pd.DataFrame,
+    answer_key_df: pd.DataFrame,
+    min_success_rate: float = 0.8,
+) -> tuple[pd.DataFrame, dict[str, float | int | str]]:
+    """Sonuçları cevap anahtarıyla karşılaştırır ve karar özeti üretir."""
+    required_cols = {"page_index", "field_id", "value", "status"}
+    if not required_cols.issubset(results_df.columns):
+        return results_df.copy(), {
+            "total_required": 0,
+            "correct_required": 0,
+            "success_rate": 0.0,
+            "ambiguous_count": 0,
+            "decision_status": "KARAR: İNCELEME GEREKİR",
+        }
+
+    answer_cols = {"page_index", "field_id", "correct_answer", "required"}
+    if not answer_cols.issubset(answer_key_df.columns):
+        answer_key_df = answer_key_df.copy()
+        answer_key_df["correct_answer"] = ""
+        answer_key_df["required"] = True
+
+    merged = results_df.merge(
+        answer_key_df[["page_index", "field_id", "correct_answer", "required"]],
+        on=["page_index", "field_id"],
+        how="left",
+    )
+
+    normalized_value = merged["value"].fillna("").astype(str).str.replace(" ", "", regex=False).str.upper()
+    normalized_key = merged["correct_answer"].fillna("").astype(str).str.replace(" ", "", regex=False).str.upper()
+
+    merged["is_key_provided"] = normalized_key != ""
+    merged["is_correct"] = merged["is_key_provided"] & (normalized_value == normalized_key)
+    merged["requires_review"] = merged["status"].isin(["multiple", "blank"]) | (
+        ~merged["is_correct"] & merged["is_key_provided"]
+    )
+
+    required_mask = merged["required"] == True
+    total_required = int(merged[required_mask].shape[0])
+    correct_required = int(merged[required_mask & merged["is_correct"]].shape[0])
+    ambiguous_count = int(merged[merged["status"].isin(["multiple", "blank"])].shape[0])
+
+    success_rate = (correct_required / total_required) if total_required else 0.0
+    decision_status = "KARAR: UYGUN"
+    if success_rate < min_success_rate or ambiguous_count > 0:
+        decision_status = "KARAR: İNCELEME GEREKİR"
+
+    summary = {
+        "total_required": total_required,
+        "correct_required": correct_required,
+        "success_rate": round(success_rate, 4),
+        "ambiguous_count": ambiguous_count,
+        "decision_status": decision_status,
+    }
+    return merged, summary
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PDF optik formları okuyup CSV + anotasyonlu PDF üretir.")
     parser.add_argument("--input", required=True, type=Path, help="Tek bir PDF dosyası veya PDF klasörü")

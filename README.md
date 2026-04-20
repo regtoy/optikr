@@ -32,7 +32,7 @@ En iyi sonuç için formun 4 köşesine dolu siyah kare marker yerleştirin.
 
 Bu marker'lar kayma, döndürme ve ölçek farklılıklarını düzeltmek için kullanılır.
 
-## Kullanım
+## CLI Kullanım
 
 ```bash
 python omr_professional.py \
@@ -43,6 +43,46 @@ python omr_professional.py \
   --mark-z-threshold 1.0 \
   --min-fill-ratio 0.22
 ```
+
+## Streamlit Web Arayüzü
+
+Proje artık web arayüzü de içerir:
+- PDF yükleme,
+- birden fazla PDF toplu işleme,
+- YAML şablon yükleme,
+- **elle cevap anahtarı** girme,
+- sonuçları tablo/CSV olarak görüntüleme,
+- karar verme gereksinimlerini uygunluk durumuyla izleme (`UYGUN` / `İNCELEME GEREKİR`).
+
+Çalıştırma:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Windows için tek komutla kurulum + çalıştırma:
+
+```bat
+run_streamlit.bat
+```
+
+Bu `.bat` dosyası otomatik olarak:
+1. `.venv` oluşturur (yoksa),
+2. bağımlılıkları kurar (`requirements.txt`),
+3. Streamlit uygulamasını başlatır.
+
+Arayüzde karar özeti şu metriklerle gösterilir:
+- zorunlu soru sayısı,
+- zorunlu sorularda doğru sayısı,
+- başarı oranı,
+- belirsiz yanıt sayısı (`blank` / `multiple`).
+
+## Performans ve Arkaplan/Uyum İyileştirmeleri
+
+- Streamlit tarafında şablon parse işlemi cache'lenir (`st.cache_data`).
+- Arkaplan OMR config yükleme adımı cache'lenir (`st.cache_resource`).
+- Backend'de `process_pdf_bytes` ile disk/path bağımsız web uyumlu işleme akışı sağlanır.
+- Backend'de `evaluate_with_answer_key` fonksiyonu ile karar mantığı merkezileştirilmiştir.
 
 ## Çıktılar
 
